@@ -1,0 +1,352 @@
+---
+title: "R markdown notebook of bioinformatics pipeline used in GMB304 Methods in functional genetics and development course"
+output: 
+  html_notebook:
+    fig_caption: yes
+    toc: true
+    code_folding: show
+---
+
+```{r Instructions}
+### From below you can find R-code to accomplish each task listed in the course materials, however, please note that aim is not just copy-paste all code as it is, but also to:
+### Understand how to modify parameters of functions
+### Learn to differentiate between R functions and objects, and operations with those.
+
+### For those brave enough you can find next to the title a button to download actual rmd code for this document and learn how to use rmarkdown to generate reports like this
+```
+
+```{r include=FALSE}
+### Please note that this file contains mixture of R-code and something called rmarkdown. For your work in this course you can ignore rmarkdown code as it is just used to form this document and its html version. Rmarkdown code is above this text as well as around each "chunk" of R code below, so any line of form of ```{r }" or ``` are rmarkdown code and R code of the chunk in question is between those lines.
+```
+
+## Loading libraries
+```{r Loading libraries, include=TRUE}
+load.libs <- c(
+  "DOSE",
+  #"GO.db",
+  #"GSEABase",
+  "org.Mm.eg.db",
+  "clusterProfiler",
+  "dplyr",
+  "tidyr",
+  "ggplot2",
+  "stringr",
+  #"RColorBrewer",
+  "rWikiPathways",
+  "Seurat",
+  "pathview",
+  "msigdbr")
+  #"RCy3")
+options(install.packages.check.source = "no")
+options(install.packages.compile.from.source = "never")
+if (!require("pacman")) install.packages("pacman"); library(pacman)
+p_load(load.libs, update = FALSE, character.only = TRUE)
+status <- sapply(load.libs,require,character.only = TRUE)
+if(all(status)){
+    print("SUCCESS: You have successfully installed and loaded all required libraries.")
+} else{
+    cat("ERROR: One or more libraries failed to install correctly. Check the following list for FALSE cases and try again...\n\n")
+    status
+}
+set.seed(2020)
+```
+
+```{r}
+### 10X sequencing systems provide their own output files which contain already preprocessed data. This means that initial QC on the read level has been done and alignment to the genome has been completed. Also reads have been linked to gene ids. First step is to load this data into R by using convenient Read10X() function. Then this data is transformed into a Seurat object, which is one of the most used and comprehesive libraries for scRNA analysis in R.
+```
+
+## 2.	Reading dataset into R from sequencing machine output files and form Seurat object from it.
+```{r Reading dataset into R ja turn into Seurat object}
+E13vR.data <- Read10X(data.dir = "./filtered_feature_bc_matrix")
+E13vR <- CreateSeuratObject(counts = E13vR.data, project = "E13", min.cells = 3, min.features = 200)
+```
+
+```{r}
+### Some additional QC still needs to be done. Like checking how much there is mitochondrial RNA present in each cell. Relying on ready Seurat functions we can calculate this number and add it to the Seurat object.
+```
+
+## 3.	Perform additional QC steps
+### a) Add mitochondrial RNA percentage to QC metrics pool
+```{r Add mitochondrial RNA percentage to QC metrics pool}
+E13vR[["percent.mt"]] <- PercentageFeatureSet(E13vR, pattern = "^mt-")
+```
+
+```{r}
+### Then we can plot few QC values for visual inspection. These three being the most common values to plot. Please note that in these plots each dot is individual cell.
+```
+
+### b) Plot QC values (Question 1)
+```{r Plot QC values}
+E13vR.p1 <- VlnPlot(E13vR, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+E13vR.p1
+```
+
+```{r}
+### Often it is best to look these with human eyes and consider proper levels for filtering. In this case we require number of features per cell to be between 600 and 6700, and mitochondrial RNA percentage per cell to be less than 15. Cells passing these requirements are selected for further analysis. Pay attention also to the fundamental logic of R here, and consider which dataobject is source and in which dataobject filtered data is asssigned.
+```
+
+### c)	Filter data based on QC values
+```{r c.	Filter data based on QC values}
+E13vR.filt <- subset(E13vR, nFeature_RNA < 6700 & nFeature_RNA > 600 & percent.mt < 15)
+```
+
+```{r}
+### Just sanity check that everything went correctly, replotting QC values of the filtered data.
+```
+
+### d) Plot QC values after filtering
+```{r Plot QC values after filtering}
+E13vR.p2 <-VlnPlot(E13vR.filt, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+E13vR.p2
+```
+
+```{r}
+### Data needs to be normalized which without going into deep mathematics simply means that data is transformed (often log transform) and scaled to diminish problems caused by outliers, batch differences etc... Normalization is VERY complicated topic in its further details, but also very important. Right now you can just rely on Seurat functions to perform normalization with default settings. Please pay attention to which object is normalized and where its results are assigned. Compare to you observations in step 3c.
+```
+
+## 4. Normalize data
+```{r Normalize data}
+E13vR.filt <- NormalizeData(E13vR.filt)
+```
+
+```{r}
+### Seurat objects also store information about variable features, which in this case means genes, as this data has been processed to the level of genes. One needs to set number of variable features via argument and then there is ready function to find that many most variable features and stote that into object structure. It is then used further downstream in the analysis.
+```
+
+## 5.	Find variable features
+```{r Find variable features}
+E13vR.filt <- FindVariableFeatures(E13vR.filt, selection.method = "vst", nfeatures = 2000)
+E13vR.filt.top10 <- head(VariableFeatures(E13vR.filt), 10)
+```
+
+```{r}
+### Naturally these features are also perhaps the first biologically interesting result, as those are the genes which do have most variance in their expression within measured pool of cells.We can plot these for further consideration and validation that sample seems to be biologically valid for this context.
+```
+
+### a) Plot variable features (Question 2)
+```{r Plot variable features}
+E13vR.p3 <- VariableFeaturePlot(E13vR.filt)
+E13vR.p4 <- LabelPoints(plot = E13vR.p3, points = E13vR.filt.top10, repel = TRUE, ynudge=0, xnudge=0)
+E13vR.p4
+```
+
+```{r}
+### Scaling of the data goes into the same category as normalization, it is more mathematical topic, but also important step. It is actually required by many downstream Seurat functions.
+```
+
+## 6.	Scale data
+```{r Scale data}
+all.genes <- rownames(E13vR.filt)
+E13vR.filt <- ScaleData(E13vR.filt, features = all.genes, verbose = FALSE)
+```
+
+```{r}
+### Next step is to reduce the dimensionality of your data, this is almost compulsary as without it is really hard to get interpretable results of the entire data space. This is very mathematical topic, but right now you can perform this as well with ready Seurat function. Please note that this function does now use Variable featuers information you calculated earlier.
+```
+
+## 7.	Preprocess for dimension reduction (Question 3: Why are we constantly talking about dimensions when doing bioinformatics? Especially in sequencing data analysis?)
+```{r Preprocess for dim reduction}
+E13vR.filt  <- RunPCA(E13vR.filt, features = VariableFeatures(object = E13vR.filt), verbose = FALSE)
+```
+
+```{r}
+### One key information to get from dimension reduction is that what is function between std and number of components. Each component captures certain amount of std but that number reduces quickly as more components are taken into account. Question goes that how many components you need to capture essential std? This is a number one needs in further analysis as it is basicly the number of dimensions to be used. 
+```
+
+## 8.	Plot Std vs PC components (Question 4)
+```{r Plot Std vs PC components}
+E13vR.p4 <- ElbowPlot(E13vR.filt, ndims = 30)
+E13vR.p4
+```
+
+```{r}
+### The number of dimensions is used first to computationally find clusters of cells within that n-dimensional space. In this case you case decide the number of dimensions used, example code below uses 1:14.
+```
+
+## 9.	Find clusters of cells within the reduced dimensional space (Question 5)
+```{r Find clusters of cells withint the reduced dimensional space}
+E13vR.filt <- FindNeighbors(E13vR.filt, dims = 1:14)
+E13vR.filt <- FindClusters(E13vR.filt, resolution = 1)
+```
+
+```{r}
+### Uniform Manifold Approximation Projection (UMAP) is perhaps the most useful functional and method in scRNA data-analysis, and in many other analyses as well. It is also mathematically extremely complex and far beyond the context of this course. Anyhow, Seurat contains nice functionality to perform UMAP. What it actually does, is that it takes those n-dimension of your data, and figures out best possible approximation of it in 2 dimensions. Therefore something we can plot in two dimension.
+```
+
+## 10.	Run Uniform Manifold Approximation Projection (=UMAP)
+```{r Run UMAP}
+E13vR.filt <- RunUMAP(E13vR.filt, dims = 1:14)
+```
+
+```{r}
+### It is very common task in single cell sequencing to draw UMAP as first analysis. It gives perhaps the best overview of the sample structure and overall variability between the cells. One can also use previous analysis which found clusters of cells in n-dimensional space and project cluster memebership information into the UMAP. In this case cells are colored based on their cluster.
+```
+
+## 11.	Plot UMAP results (Question 6: How do you interpret this plot? Consider it carefully as this is one of the most important results of many sequencing analyses)
+### a)	Per cluster
+```{r Plot UMAP results per cluster}
+E13vR.p5 <- DimPlot(E13vR.filt, label = TRUE) + theme(legend.position = "none")
+E13vR.p5
+```
+
+```{r}
+### UMAP is also useful for projecting any quantitative or qualitative information of cells as color on the UMAP. Thus in next code we check how certain key neuronal genes are expressed in each cell. Perhaps these already start to give you understanding which clusters contain which kind of cells. 
+```
+
+### b) With expression of some key neuronal genes as colored overlay
+```{r UMAP with expression of some key neuronal genes overlayed}
+FeaturePlot(E13vR.filt, features = c("Tal1", "Vsx2", "Ccnb2"), cols = c("lightgrey", "green"))
+```
+
+```{r}
+### If one know any specific marker gene for interesting cells, that can be used to find which cluster contains those. In this case letäs look for 5-HT cells based on couple of known markers.
+```
+
+## 12.a-c)	Searching for serotonergic cells
+```{r Searching for serotonergic cells}
+serot.markers <- c("Sert", "Fev")
+DimPlot(E13vR.filt, label = TRUE)
+FeaturePlot(E13vR.filt, features = serot.markers, cols = c("lightgrey", "darkred"))
+```
+### Optional task: What is the problem with Sert gene? How would you solve this problem?
+
+```{r}
+### Once we have found the cluster of interesting cells we could go-on and ask that what characterizes this cluster of cells from the other cells, naturally based on gene expression as those are the features measured and available now. We run test from Seurat which compares a specific cluster against the others in terms of gene expression.
+```
+
+## 13.	Finding genes expressed in serotonergic cluster (Question 7)
+```{r Finding serotonergic cluster specific gene expression}
+serot.cluster.diff.exp <- as_tibble(FindMarkers(E13vR.filt, ident.1 = 19, verbose = FALSE), rownames = "Symbol")
+filter(serot.cluster.diff.exp, p_val_adj < 0.05, avg_log2FC > .5)
+# Note and specific catch here is also that question is generic "What are the gene products expressed in the 5-HT neuron precursors?", but actually this analysis reveals differential expression not specific answer to "what is expressed". Latter being actually quite a lot of harder question to solve.
+```
+
+```{r}
+# Checking what fraction 5-HT cells are from the entire pool of cells.
+```
+
+## 14.	Fraction of 5-HT cells of the entire sample
+```{r Fraction of 5-HT cells}
+# Assuming the cluster be specific for 5-HT cells
+sum(Idents(E13vR.filt)==19)/length(Cells(E13vR.filt))
+```
+
+```{r}
+### Several next steps are similar in many ways. These something called ORA-tests which means Over Representation Analysis, which being perhaps the simples of the gene set analysis methods. Basicly, it is just away to get some understanding that into which biological phenomena, function, structure any particular set of genes is associated because of overrepresentation in a priori known sets of genes. We are trying to understand now biology 5-HT cells through the set of genes we previously identified to be specific for 5-HT cells. What differs between these many analyses is the datasource against which the set of genes is tested for.
+```
+
+## 15. Exploring the biology of this specific group of cells based on the list of differentially expressed genes
+### a) Extracting the list of significantly differentially expressed genes
+```{r Exploring the biology of this specific group of cells based on the list of differentially expressed genes}
+list.of.genes.up <- filter(serot.cluster.diff.exp, p_val_adj < 0.05, avg_log2FC > .5) %>% pull(Symbol)
+```
+
+### b) Convert gene symbols to Entrez ids
+```{r Convert gene symbols to Entrez ids}
+list.of.genes.up.entrez <- clusterProfiler::bitr(list.of.genes.up,fromType = "SYMBOL",toType = "ENTREZID",OrgDb = org.Mm.eg.db)
+head(list.of.genes.up.entrez)
+```
+
+### c) Calculate and plot ORA for Molecular Signatures
+```{r fig.height=12, fig.width=12}
+m_df <- msigdbr(species = "Mus musculus") %>% dplyr::select(gs_name, entrez_gene)
+Molecular.Sign.ORA <- enricher(list.of.genes.up.entrez$ENTREZID, TERM2GENE=m_df)
+dotplot(Molecular.Sign.ORA, showCategory = 20)
+```
+### d) Calculate and plot ORA for KEGG Mus musculus pathways (Question 8)
+```{r}
+KEGG.ORA <- enrichKEGG(gene = list.of.genes.up.entrez$ENTREZID,
+                 organism     = 'mmu',
+                 pvalueCutoff = 0.05)
+
+tibble.of.genes.for.patway.visualization <- filter(serot.cluster.diff.exp, p_val_adj < 0.05, avg_log2FC > .5 | avg_log2FC < -.5) %>% select(Symbol, avg_log2FC) %>% arrange(desc(avg_log2FC))
+
+values.for.pathway.vis <- pull(tibble.of.genes.for.patway.visualization, avg_log2FC)
+entrez.for.pathway.vis <- clusterProfiler::bitr(pull(tibble.of.genes.for.patway.visualization, Symbol),fromType = "SYMBOL",toType = "ENTREZID",OrgDb = org.Mm.eg.db)
+names(values.for.pathway.vis) <- entrez.for.pathway.vis$ENTREZID
+
+dotplot(KEGG.ORA)
+head(KEGG.ORA)
+```
+
+```{r}
+### Please note that following code produces results outside of R as png image in the working folder of your R session.
+```
+
+### e) Project diff. exp. gene avg_log2FC to selected pathway
+```{r}
+selected.pathway <- "mmu04726"
+mmu04726 <- pathview(gene.data  = values.for.pathway.vis,
+                     pathway.id = selected.pathway,
+                     species    = "mmu",
+                     limit      = list(gene=max(abs(values.for.pathway.vis)), cpd=1))
+
+# Please note that this function draws pathway to separate png file in the working folder
+```
+
+```{r echo=FALSE}
+require(magick)
+img <- magick::image_read('./mmu04726.pathview.png')
+plot(img)
+```
+
+### f) Calculate and plot ORA in Allen Brain Atlas
+```{r Calculate ORA in Allen Brain Atlas}
+loc2gene <- read.gmt("../mm10/gene_set_library_up_crisp.gmt")
+allen.ORA <- enricher(toupper(list.of.genes.up), TERM2GENE = loc2gene)
+dotplot(allen.ORA)
+head(allen.ORA)
+```
+
+```{r}
+### We can also look for proliferative pro-genitors for 5-HT cells by using some marker for progenitor cells. This case Nkx2-2. Analysis steps here are pretty similar as you already did. Now just with different marker gene.
+```
+
+## 16.	Search for proliferative progenitors of 5-HT cells
+### a)	Using Nkx2-2 gene as marker for proliferative cells, projecting its expression to UMAP
+```{r}
+FeaturePlot(E13vR.filt, features = c("Nkx2-2"), cols = c("lightgrey", "darkred"))
+```
+
+```{r}
+### Seurat library also allows one to calculate geneset activity scores, or module scores as they call it. Basically it is a calculation that approximates how active certain set of genes is in each cells. And this number then can be projected into UMAP again. Below we calculate cell cycle related scores, please note that genes which are linked to cell-cycle stage and progression are defined within Seurat as ready sets. Following plots show scores over UMAP for various stages of cell cycle as well as best guess of the Seurat functions that in which stage each cell has been at the time of fixation
+```
+
+### b)	Calculating cell cycle score for cells as projecting it to UMAP (Question 9)
+```{r}
+# A list of cell cycle markers, from Tirosh et al, 2015, is loaded with Seurat.  We can
+# segregate this list into markers of G2/M phase and markers of S phase
+s.genes <- str_to_title(cc.genes$s.genes)
+g2m.genes <- str_to_title(cc.genes$g2m.genes)
+
+E13vR.filt <- CellCycleScoring(E13vR.filt, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+
+FeaturePlot(E13vR.filt, features = c("S.Score"), cols = c("lightgrey", "darkred"))
+FeaturePlot(E13vR.filt.cc, features = "G2M.Score", cols = c("lightgrey", "darkred"))
+DimPlot(E13vR.filt)
+```
+
+
+## 17 Fetch WikiPathways data
+```{r Fetch WikiPathways data}
+wp.mm.gmt <- rWikiPathways::downloadPathwayArchive(organism="Mus musculus", format = "gmt")
+wp2gene <- readPathwayGMT(wp.mm.gmt)
+wpid2gene <- wp2gene %>% dplyr::select(wpid,gene) #TERM2GENE
+wpid2name <- wp2gene %>% dplyr::select(wpid,name) #TERM2NAME
+```
+
+### a) Calculate and plot ORA for WikiPathways (Question 10) 
+```{r Calculate ORA}
+Wiki.ORA <- enricher(list.of.genes.up.entrez$ENTREZID, TERM2GENE = wpid2gene, TERM2NAME = wpid2name)
+ewp <- DOSE::setReadable(Wiki.ORA, org.Mm.eg.db, keyType = "ENTREZID")
+
+dotplot(Wiki.ORA, showCategory = 20)
+head(Wiki.ORA)
+```
+
+### b) Explore WikiPathways for further insight
+```{r}
+ewp.wpids <- ewp$ID
+url <- getPathwayInfo("WP1266")$url
+browseURL(url)
+```
